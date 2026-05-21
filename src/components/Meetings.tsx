@@ -41,7 +41,7 @@ export default function Meetings() {
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [isEditing, setIsEditing] = useState<string | null>(null); 
   
-  // Track attendee count input locally inside the drawer
+
   const [editingAttendeeCount, setEditingAttendeeCount] = useState<string>('0');
   const [updatingCount, setUpdatingCount] = useState<boolean>(false);
 
@@ -56,7 +56,7 @@ export default function Meetings() {
     agendaName: ''
   });
 
-  // Sync the local input state whenever a meeting is selected or updated
+  
   useEffect(() => {
     if (selected) {
       setEditingAttendeeCount(String(selected.attendee_count ?? 0));
@@ -197,7 +197,7 @@ export default function Meetings() {
     }
   }
 
-  // Save attendee count directly from the view block
+  
   async function handleUpdateAttendeeCount() {
     if (!selected) return;
     setUpdatingCount(true);
@@ -217,7 +217,7 @@ export default function Meetings() {
         const updatedMeeting: Meeting = {
           ...selected,
           ...updated,
-          status: selected.status // keep frontend status type sync
+          status: selected.status 
         };
 
         setMeetings(prev => prev.map(m => m.id === selected.id ? updatedMeeting : m));
@@ -324,10 +324,7 @@ export default function Meetings() {
 
   return (
     <div className="p-8">
-      {/* Modified the accept attribute here. 
-        Instead of explicit constraints like .pdf or .doc, 
-        using common MIME category descriptors and extensions covers spreadsheets, text files, slide decks, and images.
-      */}
+     
       <input 
         type="file" 
         ref={fileInputRef} 
