@@ -2,6 +2,18 @@ export type MeetingStatus = 'scheduled' | 'in-progress' | 'completed' | 'cancell
 export type MemberRole = 'Chair' | 'Vice Chair' | 'Secretary' | 'Treasurer' | 'Member';
 export type AgendaItemStatus = 'pending' | 'discussed' | 'approved' | 'deferred';
 
+
+
+
+
+export interface Resolution {
+  id: number; // or string depending on your table setup
+  number: string;
+  title: string;
+  description: string;
+  status: string;
+}
+
 export interface BoardMember {
   id: string;
   name: string;
@@ -91,14 +103,7 @@ export interface Ballot {
   closesAt: string;
 }
 
-export interface Resolution {
-  id: string;
-  number: string;
-  title: string;
-  description: string;
-  status: 'approved' | 'pending' | 'rejected';
-  date: string;
-}
+
 
 export interface Policy {
   id: string;

@@ -196,7 +196,7 @@ export default function Documents() {
         </div>
 
         <div className="flex flex-col gap-3">
-          {/* Type Filters */}
+          
           <div className="flex gap-3 flex-wrap items-center">
             <span className="text-xs font-medium text-slate-500 w-16">Type:</span>
             {types.map(t => (
@@ -214,7 +214,7 @@ export default function Documents() {
             ))}
           </div>
 
-          {/* Category Filters */}
+        
           <div className="flex gap-3 flex-wrap items-center">
             <span className="text-xs font-medium text-slate-500 w-16">Category:</span>
             <button
@@ -263,7 +263,7 @@ export default function Documents() {
                       <p className="text-xs text-slate-500 truncate mt-0.5">{doc.file_name}</p>
                     </div>
                     <div className="flex items-center gap-2">
-                      {/* View Action Button */}
+                      
                       <button 
                         onClick={() => handleViewDocument(doc.storage_path)}
                         className="p-1.5 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition-colors"
@@ -274,7 +274,7 @@ export default function Documents() {
                       <span className={`text-[10px] capitalize tracking-wider font-bold px-1.5 py-0.5 rounded border flex items-center gap-1 ${
                         doc.restriction === 'confidential'
                           ? 'bg-rose-50 text-rose-700 border-rose-100' 
-                          : 'bg-amber-50 text-amber-700 border-amber-100'
+                          : 'bg-blue-50 text-blue-700 border-blue-100'
                       }`}>
                         {doc.restriction === 'confidential' ? <Lock size={10} /> : <ShieldAlert size={10} />}
                         {doc.restriction}
@@ -358,10 +358,10 @@ export default function Documents() {
                     <p className="text-[10px] text-slate-500 leading-tight">Authorized personnel/executives only.</p>
                   </label>
 
-                  <label className={`relative flex flex-col p-3 border rounded-xl cursor-pointer transition-all ${formRestriction === 'controlled' ? 'border-amber-500 bg-amber-50/50' : 'border-slate-200 hover:border-amber-200'}`}>
+                  <label className={`relative flex flex-col p-3 border rounded-xl cursor-pointer transition-all ${formRestriction === 'controlled' ? 'border-blue-500 bg-blue-50/50' : 'border-slate-200 hover:border-blue-200'}`}>
                     <input type="radio" name="restriction" value="controlled" checked={formRestriction === 'controlled'} onChange={() => setFormRestriction('controlled')} className="sr-only" />
                     <div className="flex items-center gap-2 mb-1">
-                      <ShieldAlert size={16} className="text-amber-500" />
+                      <ShieldAlert size={16} className="text-blue-500" />
                       <span className="text-sm font-bold text-slate-900">Controlled</span>
                     </div>
                     <p className="text-[10px] text-slate-500 leading-tight">Internal use only. Shared across departments.</p>

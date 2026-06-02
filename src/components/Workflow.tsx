@@ -1,90 +1,141 @@
-import { useState } from 'react';
-import { Plus, CheckCircle2, Clock, XCircle, ChevronRight, X, Calendar } from 'lucide-react';
-import { ApprovalWorkflow } from '../types';
-import { mockApprovals, mockMembers } from '../data/mockData';
+import { useState, useEffect } from 'react';
+import { Plus, CheckCircle2, Clock, XCircle, ChevronRight, X } from 'lucide-react';
+import { supabase } from '../supabaseClient';
 
-export default function Workflow() {
-  const [workflows, setWorkflows] = useState<ApprovalWorkflow[]>(mockApprovals);
+interface WorkflowItem {
+  id: string;
+  title: string;
+  description: string;
+  initiated_by: string;
+  status: 'pending' | 'approved' | 'cancelled';
+  created_at: string;
+  votes?: VoteItem[];
+}
+
+interface VoteItem {
+  member_name: string;
+  vote_status: 'pending' | 'approved' | 'cancelled';
+}
+
+interface DBBoardMember {
+  id: string;
+  name: string;
+  role: string;
+}
+
+export default function LiveWorkflowDashboard() {
+  const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
+  const [dbBoardMembers, setDbBoardMembers] = useState<DBBoardMember[]>([]);
   const [filterStatus, setFilterStatus] = useState<string>('all');
-  const [selected, setSelected] = useState<ApprovalWorkflow | null>(null);
+  const [selected, setSelected] = useState<WorkflowItem | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ title: '', description: '', approvers: [] as string[] });
+  const [form, setForm] = useState({ title: '', description: '', initiated_by: '' });
+
+  // Filter out secretaries from voting power rosters
+  const activeVotingMembers = dbBoardMembers.filter(m => m.role !== 'secretary');
+  const majorityRequirement = Math.floor(activeVotingMembers.length / 2) + 1;
+
+  // 1. Fetch Dynamic Board Members lists from database
+  const fetchBoardMembers = async () => {
+    const { data, error } = await supabase
+      .from('board_members')
+      .select('id, name, role');
+    if (!error && data) {
+      setDbBoardMembers(data as DBBoardMember[]);
+    }
+  };
+
+  // 2. Fetch workflows and sync open modal references safely
+  const fetchWorkflows = async () => {
+    const { data, error } = await supabase
+      .from('workflows')
+      .select(`*, votes:workflow_votes(member_name, vote_status)`)
+      .order('created_at', { ascending: false });
+
+    if (!error && data) {
+      setWorkflows(data as WorkflowItem[]);
+    }
+  };
+
+  // Keep modal view fresh when real-time updates modify background tallies
+  useEffect(() => {
+    if (selected) {
+      const freshData = workflows.find(w => w.id === selected.id);
+      if (freshData) {
+        setSelected(freshData);
+      }
+    }
+  }, [workflows]);
+
+  // 3. Setup Live Realtime Listeners on Mount
+  useEffect(() => {
+    fetchBoardMembers();
+    fetchWorkflows();
+
+    const channel = supabase
+      .channel('live-board-updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'workflows' }, () => { fetchWorkflows(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'workflow_votes' }, () => { fetchWorkflows(); })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []); // Empty array ensures closure event values don't collide loops
+
+  // 4. Handle Form Submission with dynamic voter seeding rules
+  const handleAddWorkflow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.title || !form.initiated_by) return;
+
+    if (activeVotingMembers.length === 0) {
+      alert("Error: No voting board members found in your database table. Please seed the database table first.");
+      return;
+    }
+
+    // Step A: Insert workflow row
+    const { data: workflowData, error: workflowError } = await supabase
+      .from('workflows')
+      .insert([{
+        title: form.title,
+        description: form.description,
+        initiated_by: form.initiated_by,
+        status: 'pending'
+      }])
+      .select()
+      .single();
+
+    if (workflowError) {
+      console.error("Supabase Workflow Insert Error:", workflowError.message);
+      alert(`Failed to save workflow: ${workflowError.message}`);
+      return;
+    }
+
+    // Step B: Seed voting entries skipping structural Secretary entries
+    const initialVotes = activeVotingMembers.map(member => ({
+      workflow_id: workflowData.id,
+      member_name: member.name,
+      vote_status: 'pending'
+    }));
+
+    const { error: votesError } = await supabase.from('workflow_votes').insert(initialVotes);
+
+    if (votesError) {
+      console.error("Supabase Seeding Votes Error:", votesError.message);
+      alert(`Workflow created, but failed to initialize board votes: ${votesError.message}`);
+      return;
+    }
+
+    setForm({ title: '', description: '', initiated_by: '' });
+    setShowForm(false);
+    fetchWorkflows();
+  };
 
   const filtered = filterStatus === 'all' ? workflows : workflows.filter(w => w.status === filterStatus);
 
-  function getMemberName(id: string) {
-    return mockMembers.find(m => m.id === id)?.name ?? 'Unknown';
-  }
-
-  function getApprovalStatus(workflow: ApprovalWorkflow) {
-    const approved = workflow.approvals.filter(a => a.status === 'approved').length;
-    const rejected = workflow.approvals.filter(a => a.status === 'rejected').length;
-    if (rejected > 0) return 'rejected';
-    if (approved === workflow.approvals.length) return 'approved';
-    return 'pending';
-  }
-
-  function formatDate(d: string) {
-    return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  }
-
-  function handleApprove(workflowId: string, memberId: string) {
-    setWorkflows(prev =>
-      prev.map(w =>
-        w.id === workflowId
-          ? {
-              ...w,
-              approvals: w.approvals.map(a =>
-                a.memberId === memberId ? { ...a, status: 'approved', date: new Date().toISOString().split('T')[0] } : a
-              ),
-            }
-          : w
-      )
-    );
-  }
-
-  function handleReject(workflowId: string, memberId: string) {
-    setWorkflows(prev =>
-      prev.map(w =>
-        w.id === workflowId
-          ? {
-              ...w,
-              approvals: w.approvals.map(a =>
-                a.memberId === memberId ? { ...a, status: 'rejected', date: new Date().toISOString().split('T')[0] } : a
-              ),
-            }
-          : w
-      )
-    );
-  }
-
-  function handleAddWorkflow(e: React.FormEvent) {
-    e.preventDefault();
-    const newWorkflow: ApprovalWorkflow = {
-      id: String(Date.now()),
-      title: form.title,
-      description: form.description,
-      initiator: '3',
-      status: 'draft',
-      approvers: form.approvers,
-      approvals: form.approvers.map(id => ({ memberId: id, status: 'pending' })),
-      createdAt: new Date().toISOString().split('T')[0],
-      dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    };
-    setWorkflows(prev => [newWorkflow, ...prev]);
-    setForm({ title: '', description: '', approvers: [] });
-    setShowForm(false);
-  }
-
-  function toggleApprover(id: string) {
-    setForm(prev => ({
-      ...prev,
-      approvers: prev.approvers.includes(id) ? prev.approvers.filter(a => a !== id) : [...prev.approvers, id],
-    }));
-  }
-
   return (
     <div className="p-8">
+      {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Workflow & Approvals</h1>
@@ -92,21 +143,21 @@ export default function Workflow() {
         </div>
         <button
           onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 bg-sky-500 hover:bg-sky-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors shadow-sm shadow-sky-100"
+          className="flex items-center gap-2 bg-sky-500 hover:bg-sky-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors shadow-sm"
         >
           <Plus size={16} />
           New Workflow
         </button>
       </div>
 
-      {/* Filters */}
+      {/* Filter Tabs */}
       <div className="flex gap-2 mb-6">
-        {['all', 'draft', 'submitted', 'approved', 'rejected'].map(f => (
+        {['all', 'pending', 'approved', 'cancelled'].map(f => (
           <button
             key={f}
             onClick={() => setFilterStatus(f)}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-              filterStatus === f ? 'bg-slate-900 text-white' : 'bg-white text-slate-500 border border-slate-200 hover:border-slate-300'
+              filterStatus === f ? 'bg-slate-900 text-white' : 'bg-white text-slate-500 border border-slate-200'
             }`}
           >
             {f.charAt(0).toUpperCase() + f.slice(1)}
@@ -114,12 +165,13 @@ export default function Workflow() {
         ))}
       </div>
 
-      {/* Workflows List */}
+      {/* Workflows Stack */}
       <div className="space-y-3">
         {filtered.map(workflow => {
-          const status = getApprovalStatus(workflow);
+          const totalVotesCast = workflow.votes?.filter(v => v.vote_status !== 'pending').length || 0;
+          const maxPossibleVotes = workflow.votes?.length || activeVotingMembers.length || 11;
           const statusColor =
-            status === 'approved' ? 'text-emerald-500 bg-emerald-50' : status === 'rejected' ? 'text-rose-500 bg-rose-50' : 'text-amber-500 bg-amber-50';
+            workflow.status === 'approved' ? 'text-emerald-500 bg-emerald-50' : workflow.status === 'cancelled' ? 'text-rose-500 bg-rose-50' : 'text-amber-500 bg-amber-50';
 
           return (
             <div
@@ -132,62 +184,35 @@ export default function Workflow() {
                   <div className="flex items-center gap-3 mb-2">
                     <h3 className="font-semibold text-slate-900 text-sm">{workflow.title}</h3>
                     <div className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${statusColor}`}>
-                      {status === 'approved' && <CheckCircle2 size={12} />}
-                      {status === 'rejected' && <XCircle size={12} />}
-                      {status === 'pending' && <Clock size={12} />}
-                      {status.charAt(0).toUpperCase() + status.slice(1)}
+                      {workflow.status === 'approved' && <CheckCircle2 size={12} />}
+                      {workflow.status === 'cancelled' && <XCircle size={12} />}
+                      {workflow.status === 'pending' && <Clock size={12} />}
+                      {workflow.status.charAt(0).toUpperCase() + workflow.status.slice(1)}
                     </div>
                   </div>
                   <p className="text-xs text-slate-500 mb-2">{workflow.description}</p>
-                  <div className="flex items-center gap-3 flex-wrap text-xs text-slate-500">
-                    <span>Initiated by {getMemberName(workflow.initiator)}</span>
-                    <span className="flex items-center gap-1">
-                      <Calendar size={11} />
-                      Due {formatDate(workflow.dueDate)}
-                    </span>
-                    <span>
-                      {workflow.approvals.filter(a => a.status === 'approved').length}/{workflow.approvals.length} approved
+                  <div className="flex items-center gap-4 text-xs text-slate-500">
+                    <span>Initiated by <b>{workflow.initiated_by}</b></span>
+                    <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-medium">
+                      Live Tally: {totalVotesCast} / {maxPossibleVotes} voted
                     </span>
                   </div>
                 </div>
-                <ChevronRight size={16} className="text-slate-300 group-hover:text-sky-400 transition-colors mt-0.5 flex-shrink-0" />
-              </div>
-
-              {/* Approval avatars */}
-              <div className="mt-3 flex items-center gap-1.5">
-                {workflow.approvals.slice(0, 5).map(approval => {
-                  const member = mockMembers.find(m => m.id === approval.memberId);
-                  if (!member) return null;
-                  return (
-                    <div key={approval.memberId} className="relative group/avatar">
-                      <img
-                        src={member.avatar}
-                        alt={member.name}
-                        className={`w-6 h-6 rounded-full object-cover border-2 ${
-                          approval.status === 'approved' ? 'border-emerald-400' : approval.status === 'rejected' ? 'border-rose-400' : 'border-slate-300'
-                        }`}
-                      />
-                      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-slate-900 text-white text-xs rounded-md whitespace-nowrap opacity-0 group-hover/avatar:opacity-100 transition-opacity pointer-events-none">
-                        {approval.status.charAt(0).toUpperCase() + approval.status.slice(1)}
-                      </div>
-                    </div>
-                  );
-                })}
-                {workflow.approvals.length > 5 && <span className="text-xs text-slate-400 px-1">+{workflow.approvals.length - 5}</span>}
+                <ChevronRight size={16} className="text-slate-300 group-hover:text-sky-400 mt-0.5" />
               </div>
             </div>
           );
         })}
       </div>
 
-      {/* Workflow Detail Modal */}
+      {/* Sidebar Detail Panel Drawer */}
       {selected && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-start justify-end p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg h-[calc(100vh-2rem)] overflow-y-auto">
             <div className="sticky top-0 bg-white border-b border-slate-100 px-6 py-4 flex items-center justify-between">
               <div>
                 <h2 className="font-bold text-slate-900">{selected.title}</h2>
-                <p className="text-xs text-slate-500 mt-1">{selected.description}</p>
+                <p className="text-xs text-slate-500 mt-1">Initiated by {selected.initiated_by}</p>
               </div>
               <button onClick={() => setSelected(null)} className="text-slate-400 hover:text-slate-600 p-1">
                 <X size={18} />
@@ -195,94 +220,39 @@ export default function Workflow() {
             </div>
 
             <div className="p-6 space-y-6">
-              {/* Status Overview */}
-              <div className="flex items-center justify-between p-4 bg-slate-50 rounded-lg">
+              {/* Vote Metrics Breakdown */}
+              <div className="grid grid-cols-3 gap-2 text-center bg-slate-50 p-4 rounded-xl">
                 <div>
-                  <p className="text-xs text-slate-500 mb-0.5">Status</p>
-                  <p className="text-sm font-semibold text-slate-800">{selected.status.charAt(0).toUpperCase() + selected.status.slice(1)}</p>
+                  <p className="text-[10px] uppercase tracking-wide font-medium text-slate-400">Approved</p>
+                  <p className="text-lg font-bold text-emerald-600">{selected.votes?.filter(v => v.vote_status === 'approved').length || 0}</p>
                 </div>
-                <div className="text-right">
-                  <p className="text-xs text-slate-500 mb-0.5">Due Date</p>
-                  <p className="text-sm font-semibold text-slate-800">{formatDate(selected.dueDate)}</p>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide font-medium text-slate-400">Cancelled</p>
+                  <p className="text-lg font-bold text-rose-600">{selected.votes?.filter(v => v.vote_status === 'cancelled').length || 0}</p>
                 </div>
-              </div>
-
-              {/* Initiator */}
-              <div>
-                <p className="text-xs font-semibold text-slate-700 mb-2">Initiated By</p>
-                <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
-                  <div className="w-8 h-8 bg-sky-100 rounded-full flex items-center justify-center text-xs font-bold text-sky-600">
-                    {getMemberName(selected.initiator).charAt(0)}
-                  </div>
-                  <span className="text-sm text-slate-800">{getMemberName(selected.initiator)}</span>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide font-medium text-slate-400">Awaiting</p>
+                  <p className="text-lg font-bold text-amber-600">{selected.votes?.filter(v => v.vote_status === 'pending').length || 0}</p>
                 </div>
               </div>
 
-              {/* Approvers */}
+              {/* Dynamic Live List of Board Room Ballots */}
               <div>
-                <p className="text-xs font-semibold text-slate-700 mb-3">Approvals</p>
-                <div className="space-y-2">
-                  {selected.approvals.map(approval => {
-                    const member = mockMembers.find(m => m.id === approval.memberId);
-                    if (!member) return null;
-
-                    const isPending = approval.status === 'pending';
-
-                    return (
-                      <div key={approval.memberId} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg group/approval">
-                        <div className="flex items-center gap-3">
-                          <img src={member.avatar} alt={member.name} className="w-8 h-8 rounded-full object-cover" />
-                          <div>
-                            <p className="text-sm font-medium text-slate-800">{member.name}</p>
-                            <p className="text-xs text-slate-500">{member.role}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {approval.status === 'approved' && <CheckCircle2 size={16} className="text-emerald-500" />}
-                          {approval.status === 'rejected' && <XCircle size={16} className="text-rose-500" />}
-                          {approval.status === 'pending' && <Clock size={16} className="text-amber-500" />}
-                          <span className={`text-xs font-medium ${approval.status === 'approved' ? 'text-emerald-600' : approval.status === 'rejected' ? 'text-rose-600' : 'text-amber-600'}`}>
-                            {approval.status.charAt(0).toUpperCase() + approval.status.slice(1)}
-                            {approval.date && <span className="ml-1">({formatDate(approval.date)})</span>}
-                          </span>
-
-                          {isPending && (
-                            <div className="flex items-center gap-1 opacity-0 group-hover/approval:opacity-100 transition-opacity">
-                              <button
-                                onClick={() => handleApprove(selected.id, approval.memberId)}
-                                className="text-xs px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded hover:bg-emerald-100 transition-colors"
-                              >
-                                Approve
-                              </button>
-                              <button
-                                onClick={() => handleReject(selected.id, approval.memberId)}
-                                className="text-xs px-2 py-0.5 bg-rose-50 text-rose-600 rounded hover:bg-rose-100 transition-colors"
-                              >
-                                Reject
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Progress Bar */}
-              <div>
-                <p className="text-xs font-semibold text-slate-700 mb-2">Progress</p>
-                <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
-                  <div
-                    className="bg-emerald-500 h-full transition-all"
-                    style={{
-                      width: `${(selected.approvals.filter(a => a.status === 'approved').length / selected.approvals.length) * 100}%`,
-                    }}
-                  />
-                </div>
-                <p className="text-xs text-slate-500 mt-1">
-                  {selected.approvals.filter(a => a.status === 'approved').length} of {selected.approvals.length} approved
+                <p className="text-xs font-semibold text-slate-700 mb-3">
+                  Voter Ledger (Requires {selected.votes ? Math.floor(selected.votes.length / 2) + 1 : majorityRequirement} for Majority decision)
                 </p>
+                <div className="space-y-2">
+                  {selected.votes?.map(vote => (
+                    <div key={vote.member_name} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                      <span className="text-sm font-medium text-slate-800">{vote.member_name}</span>
+                      <div className="flex items-center gap-1.5">
+                        {vote.vote_status === 'approved' && <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">Approved</span>}
+                        {vote.vote_status === 'cancelled' && <span className="text-xs font-semibold text-rose-600 bg-rose-50 px-2.5 py-1 rounded-full border border-rose-200">Cancelled</span>}
+                        {vote.vote_status === 'pending' && <span className="text-xs font-medium text-amber-600 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200">Pending</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -292,60 +262,53 @@ export default function Workflow() {
       {/* New Workflow Modal */}
       {showForm && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
-            <div className="px-6 py-4 border-b border-slate-100 sticky top-0 bg-white flex items-center justify-between">
-              <h2 className="font-bold text-slate-900">New Workflow</h2>
-              <button onClick={() => setShowForm(false)} className="text-slate-400 hover:text-slate-600 p-1">
-                <X size={18} />
-              </button>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-bold text-slate-900 text-lg">New Workflow Configuration</h2>
+              <button onClick={() => setShowForm(false)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
             </div>
-            <form onSubmit={handleAddWorkflow} className="p-6 space-y-4">
+            <form onSubmit={handleAddWorkflow} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">Workflow Title</label>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Workflow Title</label>
                 <input
                   required
                   type="text"
                   value={form.title}
                   onChange={e => setForm(p => ({ ...p, title: e.target.value }))}
                   placeholder="e.g. Annual Budget Review"
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-transparent transition"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-sky-400 outline-none"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">Description</label>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Description</label>
                 <textarea
                   value={form.description}
                   onChange={e => setForm(p => ({ ...p, description: e.target.value }))}
-                  placeholder="Describe the approval workflow..."
+                  placeholder="Describe details regarding this ledger item..."
                   rows={3}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-transparent transition resize-none"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-sky-400 outline-none resize-none"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-2">Select Approvers</label>
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {mockMembers.map(member => (
-                    <label key={member.id} className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={form.approvers.includes(member.id)}
-                        onChange={() => toggleApprover(member.id)}
-                        className="w-4 h-4 rounded border-slate-300 cursor-pointer"
-                      />
-                      <div className="flex-1">
-                        <p className="text-sm text-slate-700">{member.name}</p>
-                        <p className="text-xs text-slate-500">{member.role}</p>
-                      </div>
-                    </label>
-                  ))}
-                </div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Initiated By</label>
+                <input
+                  required
+                  type="text"
+                  value={form.initiated_by}
+                  onChange={e => setForm(p => ({ ...p, initiated_by: e.target.value }))}
+                  placeholder="Insert Name"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-sky-400 outline-none"
+                />
               </div>
+              <p className="text-[11px] text-amber-600 bg-amber-50 p-2.5 rounded-md border border-amber-200 font-medium">
+                * All {activeVotingMembers.length || 0} active board members will be initialized automatically as reviewers for this workflow request (Excluding Secretary).
+              </p>
               <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => setShowForm(false)} className="flex-1 border border-slate-200 text-slate-600 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors">
+                <button type="button" onClick={() => setShowForm(false)} className="flex-1 border border-slate-200 text-slate-600 py-2 rounded-lg text-sm transition-colors">
                   Cancel
                 </button>
-                <button type="submit" disabled={form.approvers.length === 0} className="flex-1 bg-sky-500 hover:bg-sky-600 disabled:bg-slate-300 text-white py-2.5 rounded-lg text-sm font-medium transition-colors">
-                  Create
+                <button type="submit" className="flex-1 bg-sky-500 hover:bg-sky-600 text-white py-2 rounded-lg text-sm font-medium transition-colors">
+                  Create Workflow
                 </button>
               </div>
             </form>
